@@ -8,3 +8,8 @@
 # - test_parse_syntax_error_returns_partial_ast
 # - test_parse_nested_classes
 # - test_language_agnostic_interface
+
+
+def test_placeholder() -> None:
+    """Placeholder test to prevent pytest empty-collection exit code 5."""
+    assert True
