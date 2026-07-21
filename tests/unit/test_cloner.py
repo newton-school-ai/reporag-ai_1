@@ -13,21 +13,17 @@ Tests cover:
 from __future__ import annotations
 
 import os
-import shutil
-import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from src.reporag.ingestion.cloner import (
+    _EXT_TO_LANGUAGE,
     LANGUAGE_EXTENSIONS,
     FileInfo,
     RepoCloner,
-    _EXT_TO_LANGUAGE,
-    _SKIP_DIRS,
 )
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -49,12 +45,12 @@ def tmp_repo(tmp_path: Path) -> Path:
     (pkg / "models.py").write_text("class Model: pass")
     (pkg / "__init__.py").write_text("")
 
-    # Should be ignored – node_modules
+    # Should be ignored - node_modules
     nm = tmp_path / "node_modules"
     nm.mkdir()
     (nm / "lodash.js").write_text("// lodash")
 
-    # Should be ignored – __pycache__
+    # Should be ignored - __pycache__
     pycache = tmp_path / "__pycache__"
     pycache.mkdir()
     (pycache / "main.cpython-311.pyc").write_bytes(b"\x00" * 10)
@@ -74,22 +70,37 @@ def cloner() -> RepoCloner:
 
 class TestFileInfo:
     def test_fields(self):
-        fi = FileInfo(file_path="/a/b.py", language="python", size_bytes=42, relative_path="b.py")
+        fi = FileInfo(
+            file_path="/a/b.py",
+            language="python",
+            size_bytes=42,
+            relative_path="b.py",
+        )
         assert fi.file_path == "/a/b.py"
         assert fi.language == "python"
         assert fi.size_bytes == 42
         assert fi.relative_path == "b.py"
 
     def test_tuple_unpacking(self):
-        fi = FileInfo(file_path="/a/b.py", language="python", size_bytes=100, relative_path="b.py")
+        fi = FileInfo(
+            file_path="/a/b.py",
+            language="python",
+            size_bytes=100,
+            relative_path="b.py",
+        )
         path, lang, size = fi
         assert path == "/a/b.py"
         assert lang == "python"
         assert size == 100
 
     def test_frozen(self):
-        fi = FileInfo(file_path="/a/b.py", language="python", size_bytes=1, relative_path="b.py")
-        with pytest.raises(Exception):
+        fi = FileInfo(
+            file_path="/a/b.py",
+            language="python",
+            size_bytes=1,
+            relative_path="b.py",
+        )
+        with pytest.raises(AttributeError):
             fi.language = "rust"  # type: ignore[misc]
 
 
@@ -296,11 +307,11 @@ class TestCloneRemote:
         """Temp dir must be cleaned up when cloning fails."""
         mock_mkdtemp.return_value = str(tmp_path)
 
-        from git import GitCommandError as _GCE
+        from git import GitCommandError
 
         with patch(
             "src.reporag.ingestion.cloner.git.Repo.clone_from",
-            side_effect=_GCE("clone", 128, "fatal: repository not found"),
+            side_effect=GitCommandError("clone", 128, "fatal: repository not found"),
         ):
             cloner = RepoCloner()
             with pytest.raises(RuntimeError, match="Failed to clone"):

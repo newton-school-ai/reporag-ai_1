@@ -18,22 +18,22 @@ Usage:
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 import shutil
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
 from urllib.parse import urlparse
 
 import git
-from git import GitCommandError, InvalidGitRepositoryError, NoSuchPathError
+from git import GitCommandError
 
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Language → file-extension mapping
+# Language -> file-extension mapping
 # ---------------------------------------------------------------------------
 
 #: Maps a canonical language name to its recognised file extensions.
@@ -62,7 +62,7 @@ LANGUAGE_EXTENSIONS: dict[str, list[str]] = {
     "sql": [".sql"],
 }
 
-# Reverse lookup: extension → language
+# Reverse lookup: extension -> language
 _EXT_TO_LANGUAGE: dict[str, str] = {
     ext: lang for lang, exts in LANGUAGE_EXTENSIONS.items() for ext in exts
 }
@@ -134,8 +134,8 @@ class CloneResult:
 
     manifest: list[FileInfo]
     repo_dir: str
-    branch: Optional[str]
-    temp_dir: Optional[str] = field(default=None, repr=False)
+    branch: str | None
+    temp_dir: str | None = field(default=None, repr=False)
 
 
 # ---------------------------------------------------------------------------
@@ -158,15 +158,13 @@ class RepoCloner:
 
     def __init__(
         self,
-        extensions: Optional[dict[str, list[str]]] = None,
+        extensions: dict[str, list[str]] | None = None,
         max_file_size_bytes: int = 1_048_576,  # 1 MB
         max_repo_size_mb: int = 500,
     ) -> None:
         self._extensions = extensions or LANGUAGE_EXTENSIONS
         self._ext_to_language: dict[str, str] = {
-            ext: lang
-            for lang, exts in self._extensions.items()
-            for ext in exts
+            ext: lang for lang, exts in self._extensions.items() for ext in exts
         }
         self._max_file_size_bytes = max_file_size_bytes
         self._max_repo_size_mb = max_repo_size_mb
@@ -178,7 +176,7 @@ class RepoCloner:
     def clone_and_discover(
         self,
         source: str,
-        branch: Optional[str] = None,
+        branch: str | None = None,
         shallow: bool = True,
         depth: int = 1,
     ) -> list[FileInfo]:
@@ -194,7 +192,7 @@ class RepoCloner:
             depth: Shallow-clone depth; only used when ``shallow=True``.
 
         Returns:
-            A list of :class:`FileInfo` instances – one per discovered file.
+            A list of :class:`FileInfo` instances - one per discovered file.
 
         Raises:
             ValueError: If *source* is empty or the resolved path/URL is
@@ -237,15 +235,21 @@ class RepoCloner:
     def _clone_remote(
         self,
         url: str,
-        branch: Optional[str],
+        branch: str | None,
         shallow: bool,
         depth: int,
     ) -> list[FileInfo]:
         """Clone *url* into a temp directory and walk the tree."""
-        tmp_dir: Optional[str] = None
+        tmp_dir: str | None = None
         try:
             tmp_dir = tempfile.mkdtemp(prefix="reporag_clone_")
-            logger.info("Cloning %s → %s (branch=%s, shallow=%s)", url, tmp_dir, branch, shallow)
+            logger.info(
+                "Cloning %s -> %s (branch=%s, shallow=%s)",
+                url,
+                tmp_dir,
+                branch,
+                shallow,
+            )
 
             clone_kwargs: dict = {
                 "to_path": tmp_dir,
@@ -277,8 +281,6 @@ class RepoCloner:
             manifest = self._walk_and_filter(repo_root, repo_root=repo_root)
             logger.info("Discovery complete: %d files found", len(manifest))
 
-            # Transfer ownership so the caller's temp dir is preserved
-            # (caller is responsible for cleanup via CloneResult)
             return manifest
 
         except Exception:
@@ -308,13 +310,11 @@ class RepoCloner:
                 try:
                     size = abs_path.stat().st_size
                 except OSError:
-                    logger.debug("Could not stat %s – skipping", abs_path)
+                    logger.debug("Could not stat %s - skipping", abs_path)
                     continue
 
                 if size > self._max_file_size_bytes:
-                    logger.debug(
-                        "Skipping large file (%d bytes): %s", size, abs_path
-                    )
+                    logger.debug("Skipping large file (%d bytes): %s", size, abs_path)
                     continue
 
                 relative = abs_path.relative_to(repo_root)
@@ -340,8 +340,6 @@ class RepoCloner:
         total = 0
         for dirpath, _, filenames in os.walk(path):
             for fname in filenames:
-                try:
+                with contextlib.suppress(OSError):
                     total += (Path(dirpath) / fname).stat().st_size
-                except OSError:
-                    pass
         return total / (1024 * 1024)
