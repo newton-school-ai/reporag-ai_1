@@ -16,6 +16,7 @@ from .parser import (
     register_language,
     supported_languages,
 )
+from .symbol_extractor import Symbol, SymbolExtractor, SymbolType
 
 __all__ = [
     # cloner
@@ -29,4 +30,8 @@ __all__ = [
     "ParseResult",
     "register_language",
     "supported_languages",
+    # symbol extractor
+    "Symbol",
+    "SymbolExtractor",
+    "SymbolType",
 ]
