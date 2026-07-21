@@ -44,7 +44,7 @@ jobs:
         with:
           python-version: "3.11"
       - name: Install linters
-        run: pip install ruff==0.8.4 black==24.10.0
+        run: pip install ruff==0.8.4 black==24.10.0 gitpython==3.1.43
       - name: Ruff check
         run: ruff check src/ tests/
       - name: Black check
@@ -60,6 +60,6 @@ jobs:
           python-version: "3.11"
       - name: Install test dependencies
         run: |
-          pip install pytest==8.3.4 pytest-cov==6.0.0 pytest-asyncio==0.24.0 pytest-timeout==2.3.1
+          pip install pytest==8.3.4 pytest-cov==6.0.0 pytest-asyncio==0.24.0 pytest-timeout==2.3.1 gitpython==3.1.43
       - name: Run unit tests
         run: pytest tests/unit/ -v --tb=short --timeout=60
