@@ -158,17 +158,13 @@ class DependencyGraphBuilder:
 
         module_name = self._get_text(module_node, source_bytes) if module_node else ""
 
-        relative_level = 0
-        for child in node.children:
-            if child.type == ".":
-                relative_level += 1
+        relative_level = len(module_name) - len(module_name.lstrip("."))
 
         module_name = self._resolve_relative_import(
-            module_name,
+            module_name.lstrip("."),
             file_path,
             relative_level,
         )
-
         imported_names: list[str] = []
         star_import = False
 
