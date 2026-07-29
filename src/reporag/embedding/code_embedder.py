@@ -15,9 +15,9 @@ class CodeEmbedder:
     def __init__(self, model_name: str = "microsoft/codebert-base"):
         """Initialize the embedder with a pre-trained model."""
         self.device = torch.device(
-            "cuda" if torch.cuda.is_available() else
-            "mps" if torch.backends.mps.is_available() else
-            "cpu"
+            "cuda"
+            if torch.cuda.is_available()
+            else "mps" if torch.backends.mps.is_available() else "cpu"
         )
         self.tokenizer = AutoTokenizer.from_pretrained(model_name)
         self.model = AutoModel.from_pretrained(model_name).to(self.device)
@@ -55,14 +55,14 @@ class CodeEmbedder:
         if uncached_strings:
             with torch.no_grad():
                 for i in range(0, len(uncached_strings), batch_size):
-                    batch_texts = uncached_strings[i:i + batch_size]
+                    batch_texts = uncached_strings[i : i + batch_size]
 
                     inputs = self.tokenizer(
                         batch_texts,
                         padding=True,
                         truncation=True,
                         max_length=512,
-                        return_tensors="pt"
+                        return_tensors="pt",
                     ).to(self.device)
 
                     outputs = self.model(**inputs)
@@ -72,7 +72,9 @@ class CodeEmbedder:
                     cls_embeddings = token_embeddings[:, 0, :]
 
                     # L2-normalize
-                    normalized_embeddings = torch.nn.functional.normalize(cls_embeddings, p=2, dim=1)
+                    normalized_embeddings = torch.nn.functional.normalize(
+                        cls_embeddings, p=2, dim=1
+                    )
                     batch_embeddings = normalized_embeddings.cpu().numpy()
 
                     # Update cache and embeddings list
