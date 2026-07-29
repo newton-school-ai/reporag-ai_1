@@ -2,8 +2,8 @@
 
 The test suite is parameterised to run against *both* backends:
 
-* **NetworkXStore** – in-memory, no external dependencies.
-* **Neo4jStore** – tested via a ``MagicMock`` driver so the suite never
+* **NetworkXStore** - in-memory, no external dependencies.
+* **Neo4jStore** - tested via a ``MagicMock`` driver so the suite never
   requires a live Neo4j instance.  The mock validates that the correct
   Cypher statements and parameters are forwarded to the driver.
 
@@ -93,7 +93,7 @@ def _run_clear(store: Any) -> None:
 
 
 # ---------------------------------------------------------------------------
-# NetworkXStore tests  (always run – no mocking required)
+# NetworkXStore tests  (always run - no mocking required)
 # ---------------------------------------------------------------------------
 
 
@@ -253,7 +253,7 @@ class TestNetworkXStore:
 
 
 # ---------------------------------------------------------------------------
-# Neo4jStore tests  (mocked driver — no live DB required)
+# Neo4jStore tests  (mocked driver - no live DB required)
 # ---------------------------------------------------------------------------
 
 

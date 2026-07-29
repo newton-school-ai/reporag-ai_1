@@ -14,8 +14,6 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
-import networkx as nx
-
 logger = logging.getLogger(__name__)
 
 
@@ -315,7 +313,9 @@ class NetworkXStore(GraphStore):
     """In-memory NetworkX backend implementing the same GraphStore interface."""
 
     def __init__(self) -> None:
-        self._graph: nx.DiGraph = nx.DiGraph()
+        import networkx as nx  # lazy import: optional dependency
+
+        self._graph = nx.DiGraph()
 
     # ------------------------------------------------------------------
     # GraphStore interface
@@ -371,6 +371,8 @@ class NetworkXStore(GraphStore):
 
     def shortest_path(self, source_id: str, target_id: str) -> list[str]:
         """Return shortest path using NetworkX."""
+        import networkx as nx  # lazy import
+
         try:
             return nx.shortest_path(self._graph.to_undirected(), source_id, target_id)
         except (nx.NetworkXNoPath, nx.NodeNotFound):
