@@ -347,19 +347,19 @@ class NetworkXStore(GraphStore):
         if node_id not in self._graph:
             return []
 
-        visited: set[str] = set()
+        visited: set[str] = {node_id}
         frontier = {node_id}
         for _ in range(depth):
             next_frontier: set[str] = set()
             for n in frontier:
                 for nb in self._graph.successors(n):
-                    if nb not in visited and nb != node_id:
+                    if nb not in visited:
                         next_frontier.add(nb)
                 for nb in self._graph.predecessors(n):
-                    if nb not in visited and nb != node_id:
+                    if nb not in visited:
                         next_frontier.add(nb)
+            frontier = next_frontier
             visited |= frontier
-            frontier = next_frontier - visited
 
         result = []
         for nid in visited - {node_id}:
