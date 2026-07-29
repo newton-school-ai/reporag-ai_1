@@ -101,6 +101,7 @@ class TestNetworkXStore:
     """NetworkXStore passes the full test suite without any mocks."""
 
     def setup_method(self) -> None:
+        pytest.importorskip("networkx", reason="networkx not installed")
         self.store = NetworkXStore()
 
     # --- node creation ---
