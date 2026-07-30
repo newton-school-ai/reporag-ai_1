@@ -1,21 +1,37 @@
 from __future__ import annotations
 
-import numpy as np
 import pytest
 
 from src.reporag.retrieval.vector_search import RetrievalResult, VectorSearcher
 
 
+class FakeVector:
+    def __init__(self, values: list[float]) -> None:
+        self.values = values
+
+    def tolist(self) -> list[float]:
+        return self.values
+
+
+class FakeMatrix:
+    def __init__(self, row: list[float]) -> None:
+        self.row = row
+
+    def __getitem__(self, index: int) -> FakeVector:
+        assert index == 0
+        return FakeVector(self.row)
+
+
 class FakeCodeEmbedder:
-    def embed_batch(self, texts: list[str]) -> np.ndarray:
-        return np.array([[1.0] * 768], dtype=float)
+    def embed_batch(self, texts: list[str]) -> FakeMatrix:
+        return FakeMatrix([1.0] * 768)
 
 
 class FakeDocEmbedder:
     def embed_batch(self, docs: list[dict[str, str]]) -> list[dict]:
         return [
             {
-                "embedding": np.array([1.0] * 384, dtype=float),
+                "embedding": FakeVector([1.0] * 384),
                 "symbol_id": docs[0]["symbol_id"],
             }
         ]
