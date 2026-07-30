@@ -5,7 +5,7 @@ import types
 
 import pytest
 
-# 1. Setup Mock Heavy Dependencies for CI/Tests (numpy, torch, transformers)
+# 1. Setup Mock Heavy Dependencies for CI/Tests
 if "numpy" not in sys.modules:
     numpy_module = types.ModuleType("numpy")
 
@@ -78,6 +78,19 @@ if "transformers" not in sys.modules:
     transformers_module.AutoModel = FakeAutoModel
     transformers_module.AutoTokenizer = FakeAutoTokenizer
     sys.modules["transformers"] = transformers_module
+
+if "sentence_transformers" not in sys.modules:
+    st_module = types.ModuleType("sentence_transformers")
+
+    class FakeSentenceTransformer:
+        def __init__(self, model_name_or_path: str | None = None, **kwargs) -> None:
+            self.model_name_or_path = model_name_or_path
+
+        def encode(self, sentences, **kwargs):
+            return [[1.0] * 384]
+
+    st_module.SentenceTransformer = FakeSentenceTransformer
+    sys.modules["sentence_transformers"] = st_module
 
 # 2. Setup Mock Qdrant Modules
 qdrant_module = types.ModuleType("qdrant_client")
