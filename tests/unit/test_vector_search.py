@@ -5,7 +5,19 @@ import types
 
 import pytest
 
-# 1. Setup Mock Qdrant Modules
+# 1. Setup Mock numpy (for CI environments missing optional runtime dependencies)
+if "numpy" not in sys.modules:
+    numpy_module = types.ModuleType("numpy")
+
+    class FakeNdArray:
+        pass
+
+    numpy_module.ndarray = FakeNdArray
+    numpy_module.array = lambda val, **kw: val
+    numpy_module.zeros = lambda shape, **kw: []
+    sys.modules["numpy"] = numpy_module
+
+# 2. Setup Mock Qdrant Modules
 qdrant_module = types.ModuleType("qdrant_client")
 http_module = types.ModuleType("qdrant_client.http")
 models_module = types.ModuleType("qdrant_client.http.models")
@@ -43,14 +55,14 @@ sys.modules["qdrant_client"] = qdrant_module
 sys.modules["qdrant_client.http"] = http_module
 sys.modules["qdrant_client.http.models"] = models_module
 
-# 2. Import application code AFTER mocking sys.modules
+# 3. Import application code AFTER mocking dependencies in sys.modules
 from src.reporag.retrieval.vector_search import (  # noqa: E402
     RetrievalResult,
     VectorSearcher,
 )
 
 
-# 3. Test Doubles & Mocks
+# 4. Test Doubles & Mocks
 class FakeVector:
     def __init__(self, values: list[float]) -> None:
         self.values = values
@@ -83,7 +95,7 @@ class FakeDocEmbedder:
         ]
 
 
-# 4. Pytest Fixtures & Tests
+# 5. Pytest Fixtures & Tests
 @pytest.fixture
 def searcher() -> VectorSearcher:
     return VectorSearcher(
