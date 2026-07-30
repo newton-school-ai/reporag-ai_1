@@ -1,10 +1,56 @@
 from __future__ import annotations
 
+import sys
+import types
+
 import pytest
 
-from src.reporag.retrieval.vector_search import RetrievalResult, VectorSearcher
+# 1. Setup Mock Qdrant Modules
+qdrant_module = types.ModuleType("qdrant_client")
+http_module = types.ModuleType("qdrant_client.http")
+models_module = types.ModuleType("qdrant_client.http.models")
 
 
+class QdrantClient:
+    def __init__(self, *args, **kwargs) -> None:
+        pass
+
+
+class MatchValue:
+    def __init__(self, value) -> None:
+        self.value = value
+
+
+class FieldCondition:
+    def __init__(self, key, match) -> None:
+        self.key = key
+        self.match = match
+
+
+class Filter:
+    def __init__(self, must) -> None:
+        self.must = must
+
+
+models_module.MatchValue = MatchValue
+models_module.FieldCondition = FieldCondition
+models_module.Filter = Filter
+
+qdrant_module.QdrantClient = QdrantClient
+http_module.models = models_module
+
+sys.modules["qdrant_client"] = qdrant_module
+sys.modules["qdrant_client.http"] = http_module
+sys.modules["qdrant_client.http.models"] = models_module
+
+# 2. Import application code AFTER mocking sys.modules
+from src.reporag.retrieval.vector_search import (  # noqa: E402
+    RetrievalResult,
+    VectorSearcher,
+)
+
+
+# 3. Test Doubles & Mocks
 class FakeVector:
     def __init__(self, values: list[float]) -> None:
         self.values = values
@@ -37,6 +83,7 @@ class FakeDocEmbedder:
         ]
 
 
+# 4. Pytest Fixtures & Tests
 @pytest.fixture
 def searcher() -> VectorSearcher:
     return VectorSearcher(
