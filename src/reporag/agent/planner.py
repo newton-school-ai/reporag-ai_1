@@ -17,7 +17,7 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Shared Enums & Data Classes
+# Enums & Data Classes
 # ---------------------------------------------------------------------------
 
 
@@ -35,11 +35,6 @@ class AnswerType(str, Enum):
     CODE = "code"
     EXPLANATION = "explanation"
     LIST = "list"
-
-
-# ---------------------------------------------------------------------------
-# Issue 20 -- QueryClassifier
-# ---------------------------------------------------------------------------
 
 
 class ClassificationResult:
@@ -69,9 +64,12 @@ class ClassificationResult:
         )
 
 
-# -- Few-shot examples -------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Few-shot examples
+# ---------------------------------------------------------------------------
 
 _FEW_SHOT_EXAMPLES: list[dict[str, str]] = [
+    # simple-lookup
     {
         "query": "Where is the authenticate function defined?",
         "query_type": "simple-lookup",
@@ -96,6 +94,7 @@ _FEW_SHOT_EXAMPLES: list[dict[str, str]] = [
         "confidence": "0.93",
         "reasoning": "Single function return type -- one lookup step needed.",
     },
+    # multi-hop
     {
         "query": "How does a request flow from the API endpoint to the database?",
         "query_type": "multi-hop",
@@ -114,6 +113,7 @@ _FEW_SHOT_EXAMPLES: list[dict[str, str]] = [
         "confidence": "0.91",
         "reasoning": "Requires tracing OAuth flow through auth, tokens, and session management.",
     },
+    # exploratory
     {
         "query": "Explain the overall architecture of this project.",
         "query_type": "exploratory",
@@ -136,19 +136,22 @@ _FEW_SHOT_EXAMPLES: list[dict[str, str]] = [
 
 
 def _build_few_shot_block() -> str:
+    """Return the few-shot block as formatted text for the LLM prompt."""
     lines: list[str] = []
     for ex in _FEW_SHOT_EXAMPLES:
         lines.append(f'Query: "{ex["query"]}"')
         lines.append(
-            f'Output: {{"query_type": "{ex["query_type"]}", '
-            f'"confidence": {ex["confidence"]}, '
-            f'"reasoning": "{ex["reasoning"]}"}}'
+            f'Output: {{"query_type": "{ex["query_type"]}", "confidence": {ex["confidence"]}, "reasoning": "{ex["reasoning"]}"}}'
         )
         lines.append("")
     return "\n".join(lines)
 
 
-_CLASSIFIER_SYSTEM_PROMPT = """\
+# ---------------------------------------------------------------------------
+# System prompt template
+# ---------------------------------------------------------------------------
+
+_SYSTEM_PROMPT = """\
 You are a query classification assistant for a code-intelligence RAG system.
 
 Your job is to classify a user query into exactly one of three categories:
@@ -175,8 +178,41 @@ Now classify the following query:
 Query: "{query}"
 Output:"""
 
-# -- Rule-based patterns -----------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# LLM client helpers (lazy import to keep the module importable without keys)
+# ---------------------------------------------------------------------------
+
+
+def _get_openai_client() -> Any:
+    """Return an OpenAI client instance, or raise ImportError if unavailable."""
+    try:
+        from openai import OpenAI  # type: ignore[import]
+
+        from src.reporag.config import settings
+
+        return OpenAI(api_key=settings.openai_api_key.get_secret_value())
+    except ImportError as e:
+        raise ImportError("openai package is required for QueryClassifier") from e
+
+
+def _call_llm(prompt: str, model: str) -> str:
+    """Call the OpenAI chat API and return the response text."""
+    client = _get_openai_client()
+    response = client.chat.completions.create(
+        model=model,
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0.0,
+        max_tokens=256,
+    )
+    return response.choices[0].message.content or ""
+
+
+# ---------------------------------------------------------------------------
+# Rule-based fallback classifier
+# ---------------------------------------------------------------------------
+
+# Patterns that strongly suggest simple-lookup
 _SIMPLE_PATTERNS: list[re.Pattern[str]] = [
     re.compile(r"\bwhere\s+is\b", re.IGNORECASE),
     re.compile(
@@ -194,6 +230,7 @@ _SIMPLE_PATTERNS: list[re.Pattern[str]] = [
     ),
 ]
 
+# Patterns that suggest multi-hop
 _MULTIHOP_PATTERNS: list[re.Pattern[str]] = [
     re.compile(r"\bhow\s+does\b.+\bflow\b", re.IGNORECASE),
     re.compile(r"\bwhat\s+happens\s+when\b", re.IGNORECASE),
@@ -204,6 +241,7 @@ _MULTIHOP_PATTERNS: list[re.Pattern[str]] = [
     re.compile(r"\bworkflow\b", re.IGNORECASE),
 ]
 
+# Patterns that suggest exploratory
 _EXPLORATORY_PATTERNS: list[re.Pattern[str]] = [
     re.compile(r"\barchitecture\b", re.IGNORECASE),
     re.compile(r"\boverview\b", re.IGNORECASE),
@@ -220,8 +258,8 @@ def _rule_based_classify(query: str) -> ClassificationResult:
     """Lightweight rule-based classifier used as fallback when LLM is unavailable.
 
     Evaluation order: simple-lookup > exploratory > multi-hop > default(multi-hop).
-    Exploratory is checked before multi-hop so that queries like \"what design
-    patterns are used?\" are not captured by multi-hop keyword heuristics.
+    Exploratory is checked before multi-hop so that queries like "what design
+    patterns are used?" are not captured by multi-hop keyword heuristics.
 
     Returns a low-confidence result so the caller can decide whether to trust it.
     """
@@ -242,26 +280,9 @@ def _rule_based_classify(query: str) -> ClassificationResult:
     return ClassificationResult(QueryType.MULTI_HOP, 0.50)
 
 
-def _get_openai_client() -> Any:
-    try:
-        from openai import OpenAI  # type: ignore[import]
-
-        from src.reporag.config import settings
-
-        return OpenAI(api_key=settings.openai_api_key.get_secret_value())
-    except ImportError as e:
-        raise ImportError("openai package is required") from e
-
-
-def _call_llm(prompt: str, model: str) -> str:
-    client = _get_openai_client()
-    response = client.chat.completions.create(
-        model=model,
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0.0,
-        max_tokens=256,
-    )
-    return response.choices[0].message.content or ""
+# ---------------------------------------------------------------------------
+# QueryClassifier
+# ---------------------------------------------------------------------------
 
 
 class QueryClassifier:
@@ -311,6 +332,10 @@ class QueryClassifier:
 
         self._few_shot_block = _build_few_shot_block()
 
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+
     def classify(self, query: str) -> ClassificationResult:
         """Classify a query and return a :class:`ClassificationResult`.
 
@@ -328,6 +353,7 @@ class QueryClassifier:
         """
         query = query.strip()
         if not query:
+            # Empty query -- safe default
             return ClassificationResult(QueryType.MULTI_HOP, 0.50)
 
         if self._use_llm:
@@ -335,6 +361,7 @@ class QueryClassifier:
         else:
             result = _rule_based_classify(query)
 
+        # Low-confidence fallback to multi-hop
         if result.confidence < self._confidence_threshold:
             logger.debug(
                 "Confidence %.2f below threshold %.2f for query %r; "
@@ -347,8 +374,16 @@ class QueryClassifier:
 
         return result
 
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
     def _classify_with_llm(self, query: str) -> ClassificationResult:
-        prompt = _CLASSIFIER_SYSTEM_PROMPT.format(
+        """Call the LLM and parse the JSON response.
+
+        Falls back to the rule-based classifier on any error.
+        """
+        prompt = _SYSTEM_PROMPT.format(
             few_shot_block=self._few_shot_block,
             query=query,
         )
@@ -362,6 +397,12 @@ class QueryClassifier:
             return _rule_based_classify(query)
 
     def _parse_llm_response(self, raw: str, query: str) -> ClassificationResult:
+        """Parse the LLM JSON response into a :class:`ClassificationResult`.
+
+        Handles cases where the model wraps the JSON in markdown fences.
+        Falls back to the rule-based classifier if parsing fails.
+        """
+        # Strip markdown fences if present
         text = raw.strip()
         text = re.sub(r"^```(?:json)?\s*", "", text)
         text = re.sub(r"\s*```$", "", text)
@@ -369,6 +410,7 @@ class QueryClassifier:
         try:
             data = json.loads(text)
         except json.JSONDecodeError:
+            # Try to extract JSON from the text
             match = re.search(r"\{.*?\}", text, re.DOTALL)
             if match:
                 try:
@@ -380,6 +422,7 @@ class QueryClassifier:
                 logger.warning("No JSON found in LLM response: %r", raw)
                 return _rule_based_classify(query)
 
+        # Validate fields
         raw_type = data.get("query_type", "").strip().lower()
         try:
             query_type = QueryType(raw_type)
@@ -399,6 +442,20 @@ class QueryClassifier:
             confidence=confidence,
             raw_response=raw,
         )
+
+
+# ---------------------------------------------------------------------------
+# QueryDecomposer -- placeholder (Issue 21)
+# ---------------------------------------------------------------------------
+
+# TODO: Implement in Issue 21
+#
+# QueryDecomposer:
+# - LangGraph state machine for decomposition
+# - Input: complex query + repo context (modules, key symbols)
+# - Output: ordered list of SubQuery objects with dependency edges
+# - Each SubQuery: text, expected_answer_type, context_from (prior IDs)
+# - Handles queries that do not need decomposition (single step)
 
 
 # ---------------------------------------------------------------------------
