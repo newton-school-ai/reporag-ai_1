@@ -11,7 +11,7 @@ Tests cover:
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -21,7 +21,6 @@ from src.reporag.agent.planner import (
     QueryType,
     _rule_based_classify,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -33,9 +32,12 @@ def make_classifier(use_llm: bool = False, threshold: float = 0.60) -> QueryClas
     return QueryClassifier(use_llm=use_llm, confidence_threshold=threshold)
 
 
-def mock_llm_response(query_type: str, confidence: float, reasoning: str = "test") -> str:
+def mock_llm_response(
+    query_type: str, confidence: float, reasoning: str = "test"
+) -> str:
     """Return a JSON string mimicking an LLM response."""
     import json
+
     return json.dumps(
         {"query_type": query_type, "confidence": confidence, "reasoning": reasoning}
     )
@@ -107,7 +109,9 @@ class TestRuleBasedClassifier:
 
     # Exploratory queries (3 examples checked before multi-hop)
     def test_exploratory_architecture(self) -> None:
-        result = _rule_based_classify("Explain the overall architecture of this project.")
+        result = _rule_based_classify(
+            "Explain the overall architecture of this project."
+        )
         assert result.query_type == QueryType.EXPLORATORY
 
     def test_exploratory_design_patterns(self) -> None:
@@ -120,7 +124,9 @@ class TestRuleBasedClassifier:
 
     # Multi-hop queries (3 examples)
     def test_multihop_what_happens_when(self) -> None:
-        result = _rule_based_classify("What happens when a user logs in via Google OAuth?")
+        result = _rule_based_classify(
+            "What happens when a user logs in via Google OAuth?"
+        )
         assert result.query_type == QueryType.MULTI_HOP
 
     def test_multihop_pipeline(self) -> None:
@@ -277,7 +283,9 @@ class TestQueryClassifierLLM:
     def test_llm_exception_falls_back_to_rule_based(self) -> None:
         """Network errors from LLM must trigger rule-based gracefully."""
         clf = QueryClassifier(use_llm=True, confidence_threshold=0.60)
-        with patch("src.reporag.agent.planner._call_llm", side_effect=Exception("timeout")):
+        with patch(
+            "src.reporag.agent.planner._call_llm", side_effect=Exception("timeout")
+        ):
             result = clf.classify("Where is the User class defined?")
         assert result.query_type in QueryType.__members__.values()
         assert 0.0 <= result.confidence <= 1.0
@@ -318,7 +326,7 @@ def test_acceptance_criteria_rule_based(query: str, expected_type: QueryType) ->
     """Each of the 10 representative queries must be classified correctly."""
     clf = QueryClassifier(use_llm=False, confidence_threshold=0.60)
     result = clf.classify(query)
-    assert result.query_type == expected_type, (
-        f"Expected {expected_type!r} for query {query!r}, got {result.query_type!r}"
-    )
+    assert (
+        result.query_type == expected_type
+    ), f"Expected {expected_type!r} for query {query!r}, got {result.query_type!r}"
     assert 0.0 <= result.confidence <= 1.0

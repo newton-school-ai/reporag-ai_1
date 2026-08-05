@@ -131,7 +131,9 @@ def _build_few_shot_block() -> str:
     lines: list[str] = []
     for ex in _FEW_SHOT_EXAMPLES:
         lines.append(f'Query: "{ex["query"]}"')
-        lines.append(f'Output: {{"query_type": "{ex["query_type"]}", "confidence": {ex["confidence"]}, "reasoning": "{ex["reasoning"]}"}}')
+        lines.append(
+            f'Output: {{"query_type": "{ex["query_type"]}", "confidence": {ex["confidence"]}, "reasoning": "{ex["reasoning"]}"}}'
+        )
         lines.append("")
     return "\n".join(lines)
 
@@ -204,12 +206,19 @@ def _call_llm(prompt: str, model: str) -> str:
 # Patterns that strongly suggest simple-lookup
 _SIMPLE_PATTERNS: list[re.Pattern[str]] = [
     re.compile(r"\bwhere\s+is\b", re.IGNORECASE),
-    re.compile(r"\bwhat\s+are\s+the\s+(params?|parameters?|arguments?|attrs?|attributes?)\b", re.IGNORECASE),
+    re.compile(
+        r"\bwhat\s+are\s+the\s+(params?|parameters?|arguments?|attrs?|attributes?)\b",
+        re.IGNORECASE,
+    ),
     re.compile(r"\bshow\s+me\s+the\b", re.IGNORECASE),
     re.compile(r"\bwhat\s+does\s+.+\s+return\b", re.IGNORECASE),
-    re.compile(r"\bwhat\s+is\s+the\s+(signature|definition|value|type)\b", re.IGNORECASE),
+    re.compile(
+        r"\bwhat\s+is\s+the\s+(signature|definition|value|type)\b", re.IGNORECASE
+    ),
     re.compile(r"\bfind\s+the\s+function\b", re.IGNORECASE),
-    re.compile(r"\blist\s+(all\s+)?(methods?|functions?|classes?|imports?)\b", re.IGNORECASE),
+    re.compile(
+        r"\blist\s+(all\s+)?(methods?|functions?|classes?|imports?)\b", re.IGNORECASE
+    ),
 ]
 
 # Patterns that suggest multi-hop
@@ -409,7 +418,9 @@ class QueryClassifier:
         try:
             query_type = QueryType(raw_type)
         except ValueError:
-            logger.warning("Unknown query_type %r from LLM; using rule-based.", raw_type)
+            logger.warning(
+                "Unknown query_type %r from LLM; using rule-based.", raw_type
+            )
             return _rule_based_classify(query)
 
         try:
