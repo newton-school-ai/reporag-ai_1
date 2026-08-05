@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
@@ -26,6 +27,14 @@ class QueryType(str, Enum):
     SIMPLE_LOOKUP = "simple-lookup"
     MULTI_HOP = "multi-hop"
     EXPLORATORY = "exploratory"
+
+
+class AnswerType(str, Enum):
+    """Expected answer format for a sub-query."""
+
+    CODE = "code"
+    EXPLANATION = "explanation"
+    LIST = "list"
 
 
 class ClassificationResult:
@@ -447,3 +456,438 @@ class QueryClassifier:
 # - Output: ordered list of SubQuery objects with dependency edges
 # - Each SubQuery: text, expected_answer_type, context_from (prior IDs)
 # - Handles queries that do not need decomposition (single step)
+
+
+# ---------------------------------------------------------------------------
+# Issue 21 -- QueryDecomposer (LangGraph state machine)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class SubQuery:
+    """A single step in a decomposed query plan.
+
+    Attributes:
+        id: Zero-based integer step index (e.g. 0, 1, 2).
+        query: The natural-language sub-query text.
+        expected_answer_type: What kind of answer is expected
+            (``code``, ``explanation``, or ``list``).
+        depends_on: List of step IDs whose results this step needs as context.
+            Empty for the first step.
+        context_from: Alias for ``depends_on`` used in prompt templates --
+            the IDs of prior steps whose retrieved context should be injected.
+    """
+
+    id: int
+    query: str
+    expected_answer_type: AnswerType = AnswerType.EXPLANATION
+    depends_on: list[int] = field(default_factory=list)
+
+    @property
+    def context_from(self) -> list[int]:
+        """Alias for ``depends_on`` -- prior step IDs to inject as context."""
+        return self.depends_on
+
+    def __repr__(self) -> str:  # pragma: no cover
+        return (
+            f"SubQuery(id={self.id}, query={self.query!r}, "
+            f"answer_type={self.expected_answer_type.value!r}, "
+            f"depends_on={self.depends_on!r})"
+        )
+
+
+@dataclass
+class DecompositionPlan:
+    """The output of :class:`QueryDecomposer`.
+
+    Attributes:
+        original_query: The raw query that was decomposed.
+        steps: Ordered list of :class:`SubQuery` objects.  Steps are ordered
+            so that all dependencies appear before the step that needs them.
+    """
+
+    original_query: str
+    steps: list[SubQuery] = field(default_factory=list)
+
+    @property
+    def is_single_step(self) -> bool:
+        """True when the query did not need decomposition."""
+        return len(self.steps) == 1
+
+    def __repr__(self) -> str:  # pragma: no cover
+        return (
+            f"DecompositionPlan(steps={len(self.steps)}, query={self.original_query!r})"
+        )
+
+
+# -- LangGraph state ---------------------------------------------------------
+
+# DecomposerState is a plain dict used as the LangGraph state object.
+# Keys:
+#   query        : str  -- original query
+#   repo_context : dict -- module names, key symbols, etc.
+#   raw_json     : str  -- LLM response (set by decompose_node)
+#   plan         : DecompositionPlan | None  -- set by parse_node
+#   error        : str | None -- set if any node fails
+
+
+def _make_initial_state(
+    query: str, repo_context: dict[str, Any] | None
+) -> dict[str, Any]:
+    return {
+        "query": query,
+        "repo_context": repo_context or {},
+        "raw_json": "",
+        "plan": None,
+        "error": None,
+    }
+
+
+# -- Prompt ------------------------------------------------------------------
+
+_DECOMPOSER_SYSTEM_PROMPT = """\
+You are a query decomposition assistant for a code-intelligence RAG system.
+
+Your task: break a complex multi-hop query about a software repository into
+2-5 ordered sub-queries. Each sub-query should retrieve one specific piece
+of information needed to answer the full question.
+
+Repository context:
+  modules   : {modules}
+  key_symbols: {key_symbols}
+
+Rules:
+1. Return between 1 and 5 sub-queries. Return exactly 1 if the query is
+   simple enough to answer in a single retrieval step.
+2. Sub-queries must be ordered so that earlier steps provide context for
+   later ones.
+3. Each sub-query must specify:
+     - "id"                  : integer starting at 0
+     - "query"               : the sub-query text
+     - "expected_answer_type": one of "code", "explanation", "list"
+     - "depends_on"          : list of step IDs this step needs as context
+                               (empty list [] for step 0)
+4. Return ONLY a JSON object:
+   {{
+     "steps": [ ... ]
+   }}
+
+Few-shot examples:
+
+Query: "How does a request flow from the API endpoint to the database?"
+Output:
+{{
+  "steps": [
+    {{"id": 0, "query": "Find the API endpoint handler function for the main request path.", "expected_answer_type": "code", "depends_on": []}},
+    {{"id": 1, "query": "Trace how the handler calls the service or business logic layer.", "expected_answer_type": "code", "depends_on": [0]}},
+    {{"id": 2, "query": "Find how the service layer interacts with the database ORM or query layer.", "expected_answer_type": "code", "depends_on": [1]}},
+    {{"id": 3, "query": "Summarise the full request-to-database flow.", "expected_answer_type": "explanation", "depends_on": [0, 1, 2]}}
+  ]
+}}
+
+Query: "Where is the UserModel class defined?"
+Output:
+{{
+  "steps": [
+    {{"id": 0, "query": "Where is the UserModel class defined?", "expected_answer_type": "code", "depends_on": []}}
+  ]
+}}
+
+Query: "How are embeddings generated and indexed into Qdrant?"
+Output:
+{{
+  "steps": [
+    {{"id": 0, "query": "Find the embedding generation function or class.", "expected_answer_type": "code", "depends_on": []}},
+    {{"id": 1, "query": "Find where embeddings are inserted or upserted into Qdrant.", "expected_answer_type": "code", "depends_on": [0]}},
+    {{"id": 2, "query": "Explain the end-to-end embedding and indexing pipeline.", "expected_answer_type": "explanation", "depends_on": [0, 1]}}
+  ]
+}}
+
+Now decompose this query:
+Query: "{query}"
+Output:"""
+
+# -- LangGraph nodes ---------------------------------------------------------
+
+
+def _build_langgraph_app() -> Any:
+    """Build and return the compiled LangGraph application.
+
+    The graph has three nodes:
+      decompose  -- calls the LLM to produce a raw JSON decomposition
+      parse      -- parses the raw JSON into a DecompositionPlan
+      fallback   -- used when decompose fails; produces a single-step plan
+
+    State transitions:
+      START -> decompose -> parse -> END
+                         -> fallback -> END  (on parse error)
+      START -> fallback -> END               (on LLM error)
+    """
+    try:
+        from langgraph.graph import END, START, StateGraph  # type: ignore[import]
+    except ImportError as exc:
+        raise ImportError("langgraph is required for QueryDecomposer") from exc
+
+    def decompose_node(state: dict[str, Any]) -> dict[str, Any]:
+        """Node: call LLM to decompose the query."""
+        query: str = state["query"]
+        repo_context: dict[str, Any] = state.get("repo_context", {})
+        modules = repo_context.get("modules", [])
+        key_symbols = repo_context.get("key_symbols", [])
+
+        prompt = _DECOMPOSER_SYSTEM_PROMPT.format(
+            modules=", ".join(modules) if modules else "unknown",
+            key_symbols=", ".join(key_symbols) if key_symbols else "unknown",
+            query=query,
+        )
+        try:
+            raw = _call_llm(prompt, "gpt-4o")
+            return {**state, "raw_json": raw}
+        except Exception as exc:
+            logger.warning("Decomposer LLM call failed (%s); using fallback.", exc)
+            return {**state, "raw_json": "", "error": str(exc)}
+
+    def parse_node(state: dict[str, Any]) -> dict[str, Any]:
+        """Node: parse raw JSON into a DecompositionPlan."""
+        raw: str = state.get("raw_json", "")
+        query: str = state["query"]
+
+        if not raw or state.get("error"):
+            plan = _single_step_plan(query)
+            return {**state, "plan": plan}
+
+        plan = _parse_decomposition_json(raw, query)
+        return {**state, "plan": plan}
+
+    graph = StateGraph(dict)
+    graph.add_node("decompose", decompose_node)
+    graph.add_node("parse", parse_node)
+
+    graph.add_edge(START, "decompose")
+    graph.add_edge("decompose", "parse")
+    graph.add_edge("parse", END)
+
+    return graph.compile()
+
+
+# -- Parsing helpers ---------------------------------------------------------
+
+
+def _parse_decomposition_json(raw: str, original_query: str) -> DecompositionPlan:
+    """Parse the LLM decomposition JSON into a :class:`DecompositionPlan`."""
+    text = raw.strip()
+    text = re.sub(r"^```(?:json)?\s*", "", text)
+    text = re.sub(r"\s*```$", "", text)
+
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        match = re.search(r"\{.*\}", text, re.DOTALL)
+        if match:
+            try:
+                data = json.loads(match.group())
+            except json.JSONDecodeError:
+                logger.warning("Could not parse decomposition JSON: %r", raw)
+                return _single_step_plan(original_query)
+        else:
+            logger.warning("No JSON in decomposition response: %r", raw)
+            return _single_step_plan(original_query)
+
+    raw_steps = data.get("steps", [])
+    if not isinstance(raw_steps, list) or len(raw_steps) == 0:
+        return _single_step_plan(original_query)
+
+    steps: list[SubQuery] = []
+    for i, s in enumerate(raw_steps[:5]):  # cap at 5
+        try:
+            answer_type = AnswerType(s.get("expected_answer_type", "explanation"))
+        except ValueError:
+            answer_type = AnswerType.EXPLANATION
+
+        depends_on = s.get("depends_on", [])
+        if not isinstance(depends_on, list):
+            depends_on = []
+
+        steps.append(
+            SubQuery(
+                id=i,
+                query=str(s.get("query", original_query)),
+                expected_answer_type=answer_type,
+                depends_on=[int(d) for d in depends_on if isinstance(d, int | float)],
+            )
+        )
+
+    if not steps:
+        return _single_step_plan(original_query)
+
+    return DecompositionPlan(original_query=original_query, steps=steps)
+
+
+def _single_step_plan(query: str) -> DecompositionPlan:
+    """Return a no-op plan with a single step (no decomposition needed)."""
+    return DecompositionPlan(
+        original_query=query,
+        steps=[
+            SubQuery(
+                id=0,
+                query=query,
+                expected_answer_type=AnswerType.EXPLANATION,
+                depends_on=[],
+            )
+        ],
+    )
+
+
+# Multi-hop hint patterns for the rule-based decomposer
+_MULTIHOP_DECOMPOSE_RE = re.compile(
+    r"\b(flow|pipeline|workflow|happen|end.to.end|trace|step.by.step"
+    r"|generat|stored|indexed|ingestion|authentication|go\s+from)\b",
+    re.IGNORECASE,
+)
+
+
+def _rule_based_decompose(
+    query: str, repo_context: dict[str, Any] | None
+) -> DecompositionPlan:
+    """Simple rule-based decomposer used when LLM is unavailable.
+
+    Produces a 2-step plan for multi-hop queries: locate then explain.
+    Returns a single-step plan for all others.
+    """
+    ctx = repo_context or {}
+    modules: list[str] = ctx.get("modules", [])
+
+    if _MULTIHOP_DECOMPOSE_RE.search(query):
+        locate_query = f"Find the relevant functions and classes involved in: {query}"
+        if modules:
+            locate_query += f" Focus on modules: {', '.join(modules[:4])}."
+
+        return DecompositionPlan(
+            original_query=query,
+            steps=[
+                SubQuery(
+                    id=0,
+                    query=locate_query,
+                    expected_answer_type=AnswerType.CODE,
+                    depends_on=[],
+                ),
+                SubQuery(
+                    id=1,
+                    query=f"Explain how the components work together to answer: {query}",
+                    expected_answer_type=AnswerType.EXPLANATION,
+                    depends_on=[0],
+                ),
+            ],
+        )
+
+    return _single_step_plan(query)
+
+
+# -- Public API --------------------------------------------------------------
+
+
+class QueryDecomposer:
+    """LangGraph-based query decomposer.
+
+    Breaks a complex multi-hop query into 1-5 ordered :class:`SubQuery` steps
+    with explicit dependency edges.  Each step carries the sub-query text,
+    the expected answer type (``code`` / ``explanation`` / ``list``), and the
+    IDs of prior steps whose retrieved context should be injected.
+
+    For simple queries (e.g. single symbol lookups), the decomposer returns a
+    :class:`DecompositionPlan` with exactly one step -- no decomposition needed.
+
+    The LangGraph state machine has three nodes:
+        - **decompose**: call the LLM with a few-shot prompt
+        - **parse**: convert raw JSON into a :class:`DecompositionPlan`
+        - **fallback**: produce a single-step plan on any error
+
+    When ``use_llm=False`` (testing without API keys), a lightweight rule-based
+    heuristic is used instead.
+
+    Args:
+        model: OpenAI model used for decomposition. Defaults to ``gpt-4o``.
+        use_llm: Set to ``False`` to use the rule-based fallback (no API key
+            needed -- useful for unit tests).
+        max_steps: Hard cap on the number of sub-queries (1-5). Defaults to 5.
+
+    Example::
+
+        decomposer = QueryDecomposer()
+        plan = decomposer.decompose(
+            "How does a request go from the API endpoint to the database?",
+            repo_context={"modules": ["api", "routes", "db", "models"]},
+        )
+        for step in plan.steps:
+            print(step.id, step.query, step.depends_on)
+    """
+
+    def __init__(
+        self,
+        model: str = "gpt-4o",
+        use_llm: bool = True,
+        max_steps: int = 5,
+    ) -> None:
+        self._model = model
+        self._use_llm = use_llm
+        self._max_steps = max(1, min(5, max_steps))
+        self._app: Any = None  # lazy-initialised
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+
+    def decompose(
+        self,
+        query: str,
+        repo_context: dict[str, Any] | None = None,
+    ) -> DecompositionPlan:
+        """Decompose ``query`` into an ordered list of sub-queries.
+
+        Args:
+            query: The user's natural-language question.
+            repo_context: Optional dict with keys such as ``modules`` (list of
+                module names) and ``key_symbols`` (list of important identifiers).
+                Used to inform the LLM prompt.
+
+        Returns:
+            A :class:`DecompositionPlan` with 1-5 ordered :class:`SubQuery` steps.
+        """
+        query = query.strip()
+        if not query:
+            return _single_step_plan("")
+
+        if not self._use_llm:
+            return _rule_based_decompose(query, repo_context)
+
+        return self._decompose_with_langgraph(query, repo_context)
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    def _decompose_with_langgraph(
+        self,
+        query: str,
+        repo_context: dict[str, Any] | None,
+    ) -> DecompositionPlan:
+        """Run the LangGraph state machine and return a :class:`DecompositionPlan`."""
+        try:
+            if self._app is None:
+                self._app = _build_langgraph_app()
+            initial_state = _make_initial_state(query, repo_context)
+            final_state = self._app.invoke(initial_state)
+            plan: DecompositionPlan | None = final_state.get("plan")
+            if plan is None:
+                logger.warning("LangGraph returned no plan; using fallback.")
+                plan = _rule_based_decompose(query, repo_context)
+            # Enforce max_steps cap
+            plan.steps = plan.steps[: self._max_steps]
+            return plan
+        except Exception as exc:
+            logger.warning(
+                "LangGraph decomposition failed (%s); using rule-based fallback.", exc
+            )
+            plan = _rule_based_decompose(query, repo_context)
+            plan.steps = plan.steps[: self._max_steps]
+            return plan
